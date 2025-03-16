@@ -1,0 +1,90 @@
+# Python相关忽略
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.env
+.venv
+.env.*
+
+# 前端/Node.js相关忽略
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+.pnp/
+.pnp.js
+
+# 前端构建输出
+/frontend/dist/
+/frontend/dist-ssr/
+*.local
+
+# IDE和编辑器相关忽略
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+.project
+.classpath
+.settings/
+*.launch
+*.tmproj
+.vs/
+
+# 日志文件
+*.log
+logs/
+log/
+
+# 本地数据文件
+backend/app/data/*.json
+!backend/app/data/examples/
+
+# 其他临时文件
+*.tmp
+*.temp
+*.bak
+.cache/
+temp/
+tmp/
+
+# 敏感信息配置文件
+config.prod.json
+secrets.json
+.env.local
+.env.production
+
+# 自动生成的文件
+*.generated.* 
