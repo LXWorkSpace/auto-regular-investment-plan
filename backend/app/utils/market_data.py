@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Union, Tuple
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+# 6IRLIE9JEKLVA58F
 
 class MarketDataFetcher:
     """市场数据获取工具类"""
@@ -19,7 +20,7 @@ class MarketDataFetcher:
         self.cn_pe_history = {}  # 中国市场PE历史数据缓存
         self.us_pe_history = {}  # 美国市场PE历史数据缓存
     
-    def get_stock_data(self, code: str, market: str = "US", days: int = 250) -> Optional[pd.DataFrame]:
+    def get_stock_data(self, code: str, market: str = "US", days: int = 400) -> Optional[pd.DataFrame]:
         """获取股票历史数据
         
         Args:
@@ -37,7 +38,6 @@ class MarketDataFetcher:
                 # 使用yfinance获取美股数据
                 ticker = yf.Ticker(code)
                 df = ticker.history(start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'))
-                print(f"df: {df}")
                 if df.empty:
                     logger.warning(f"获取美股数据失败: {code}")
                     return None
