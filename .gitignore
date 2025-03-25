@@ -26,6 +26,8 @@ htmlcov/
 .nox/
 .hypothesis/
 
+screenshots/
+
 # 虚拟环境
 venv/
 env/
