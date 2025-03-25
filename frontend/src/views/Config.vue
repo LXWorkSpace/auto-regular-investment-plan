@@ -55,10 +55,14 @@
           <div class="assets-header">
             <h3>
               已添加资产
-              <el-tag type="info"
-                >总权重:
-                {{ percentageFormatter(configStore.totalWeight) }}</el-tag
+              <el-tag 
+                :type="configStore.totalWeight > 1 ? 'danger' : 'info'"
+                :effect="configStore.totalWeight > 1 ? 'dark' : 'plain'"
               >
+                总权重:
+                {{ percentageFormatter(configStore.totalWeight) }}
+                <span v-if="configStore.totalWeight > 1">（超出100%）</span>
+              </el-tag>
             </h3>
             <div>
               <el-button
@@ -273,6 +277,11 @@ const addAsset = () => {
 const saveConfig = async () => {
   if (!configStore.config.monthly_investment) {
     ElMessage.warning("请确保月度投资金额已设置");
+    return;
+  }
+
+  if (configStore.totalWeight > 1) {
+    ElMessage.warning("资产权重总和不能超过100%，请调整资产权重");
     return;
   }
 

@@ -17,10 +17,14 @@ export const useConfigStore = defineStore('config', {
     totalWeight: (state) => {
       return state.config.assets.reduce((sum, asset) => sum + asset.weight, 0)
     },
+    isValidWeights: (state) => {
+      return state.totalWeight <= 1
+    },
     isValidConfig: (state) => {
       return (
         state.config.monthly_investment > 0 &&
-        state.config.assets.length > 0
+        state.config.assets.length > 0 &&
+        state.totalWeight <= 1
       )
     }
   },

@@ -182,12 +182,9 @@ class InvestmentCalculator:
         # 资产权重调整
         adjusted_weights = self._adjust_asset_weights(user_config.assets, market_scores)
         
-        # 确定是否使用资金池额外资金（仅在最高评分≥80分时）
+        # 确定是否使用资金池额外资金（在极度超跌区间或需要试探性投资时）
         additional_funding = 0
-        if highest_score >= 80:
-            # 在极度超跌区间，可以使用资金池
-            additional_funding = buffer_amount * self.max_buffer_usage_percentage
-            warning_messages.append(f"市场处于极度超跌状态，启用资金池额外投入 {additional_funding:.2f} 元")
+        probing_funding = 0
         
         # 确定是否使用试探性投资（在评分接近价值区间时）
         is_probing = False
@@ -201,16 +198,26 @@ class InvestmentCalculator:
                 probing_asset_codes.add(asset.code)
                 warning_messages.append(f"{asset.code}: 评分接近价值区间，启动小额试探机制")
         
-        # 预分配资金：为试探性投资预留资金，其余资金正常分配
-        reserved_for_probing = 0
+        # 计算需要的资金池金额
+        if highest_score >= 80:
+            # 在极度超跌区间，可以使用资金池
+            additional_funding = buffer_amount * self.max_buffer_usage_percentage
+            warning_messages.append(f"市场处于极度超跌状态，启用资金池额外投入 {additional_funding:.2f} 元")
+        
+        # 计算试探性投资资金
+        probing_funding = 0
         if is_probing:
-            # 预留的试探资金 = 总金额 * 试探比例 * 试探资产数量
-            reserved_for_probing = total_monthly_amount * probing_percentage * len(probing_asset_codes)
-            # 确保不会预留超过50%的资金用于试探
-            reserved_for_probing = min(reserved_for_probing, total_monthly_amount * 0.5)
+            # 试探性投资资金从资金池中取
+            probing_funding = total_monthly_amount * probing_percentage
+            # 确保不会使用超过50%的资金池
+            probing_funding = min(probing_funding, buffer_amount * self.max_buffer_usage_percentage)
+            warning_messages.append(f"启用试探性投资，从资金池中取用 {probing_funding:.2f} 元")
+        
+        # 计算实际可用的资金池总额
+        total_buffer_usage = min(additional_funding + probing_funding, buffer_amount * self.max_buffer_usage_percentage)
         
         # 剩余可用于正常分配的资金
-        remaining_amount = total_monthly_amount - reserved_for_probing
+        remaining_amount = total_monthly_amount
         
         # 生成投资建议
         total_investment_amount = 0  # 跟踪总投资金额
@@ -230,29 +237,25 @@ class InvestmentCalculator:
             # 确定投资策略
             strategy = self.market_score_calculator.determine_investment_strategy(score)
             
-            # 根据资产是否需要试探性投资来计算月度投资金额
+            # 计算基础月度投资金额
+            monthly_amount = remaining_amount * adjusted_weight
+            
+            # 处理特殊频率
+            raw_frequency = strategy.get("frequency", "biweekly")
+            frequency = self._convert_to_investment_frequency(raw_frequency)
+            
+            # 添加特殊频率标记，用于生成正确的投资日期
+            if raw_frequency == "daily":
+                strategy["special_frequency"] = "daily"
+            
+            frequency_factor = strategy.get("amount_factor", 1.0)
+            
+            # 如果是试探性投资资产，加上试探资金
             if asset_code in probing_asset_codes:
-                # 试探性投资：固定使用预留的试探资金
-                monthly_amount = total_monthly_amount * probing_percentage
-                frequency = InvestmentFrequency.BIWEEKLY
-                frequency_factor = 0.6
-                
-                # 创建特殊策略标记
+                # 加上试探资金，不影响基础金额分配
+                monthly_amount += probing_funding
                 strategy["score_level"] = "接近价值区间(试探)"
                 strategy["description"] = "市场接近价值区间，启动试探性小额投资"
-            else:
-                # 非试探逻辑：按权重分配剩余资金
-                monthly_amount = remaining_amount * adjusted_weight
-                
-                # 处理特殊频率
-                raw_frequency = strategy.get("frequency", "biweekly")
-                frequency = self._convert_to_investment_frequency(raw_frequency)
-                
-                # 添加特殊频率标记，用于生成正确的投资日期
-                if raw_frequency == "daily":
-                    strategy["special_frequency"] = "daily"
-                
-                frequency_factor = strategy.get("amount_factor", 1.0)
             
             # 生成投资日期
             investment_dates = self._get_investment_dates(frequency, 
@@ -291,26 +294,26 @@ class InvestmentCalculator:
         )
         
         # 确保实际总投资额等于月度预算
-        adjustment_factor = 1.0
+        adjustment_factor = 1.0  # 默认为1.0，不进行调整
         
-        # 如果不完全相等，进行调整
-        if abs(expected_total_with_frequency - (total_monthly_amount + additional_funding)) > 0.01:
-            adjustment_factor = (total_monthly_amount + additional_funding) / expected_total_with_frequency
-            logger.info(f"调整投资计划以匹配预算: 系数={adjustment_factor:.4f}, 原始总额={expected_total_with_frequency:.2f}, 目标={total_monthly_amount + additional_funding:.2f}")
+        # 记录原始总投资额，但不进行调整
+        if abs(expected_total_with_frequency - (total_monthly_amount + probing_funding)) > 0.01:
+            # 仅记录日志，不进行调整
+            logger.info(f"总投资额({expected_total_with_frequency:.2f})与预算({total_monthly_amount + probing_funding:.2f})不等，但不进行调整")
         
-        # 第二轮：创建最终推荐并应用预算调整
+        # 第二轮：创建最终推荐（不应用预算调整因子）
         for raw_rec in raw_recommendations:
             asset = raw_rec["asset"]
             score = raw_rec["score"]
             score_result = market_scores.get(asset.code, {})
             
-            # 应用预算调整因子到单次投资金额
-            adjusted_single_amount = raw_rec["single_amount"] * adjustment_factor
+            # 使用原始单次投资金额，不应用调整因子
+            single_amount = raw_rec["single_amount"]
             
-            # 重新计算调整后的月度投资金额，确保与频率和单次金额一致
+            # 计算月度投资金额，确保与频率和单次金额一致
             frequency = raw_rec["frequency"]
             num_investments = len(raw_rec["investment_dates"])  # 一个月内的投资次数
-            adjusted_monthly_amount = adjusted_single_amount * num_investments
+            monthly_amount = single_amount * num_investments
             
             # 创建投资建议
             recommendation = InvestmentRecommendation(
@@ -320,14 +323,14 @@ class InvestmentCalculator:
                 volatility_coefficient=score_result.get("volatility_score", 10) / 10,
                 recommended_frequency=frequency,
                 frequency_factor=raw_rec["frequency_factor"],
-                monthly_amount=adjusted_monthly_amount,  # 调整后的月度金额
-                single_amount=adjusted_single_amount,    # 调整后的单次金额
+                monthly_amount=monthly_amount,  # 使用原始计算的月度金额
+                single_amount=single_amount,    # 使用原始计算的单次金额
                 investment_dates=raw_rec["investment_dates"],
                 special_condition=raw_rec["special_condition"]
             )
             
             # 更新总投资金额
-            total_investment_amount += adjusted_single_amount * num_investments
+            total_investment_amount += single_amount * num_investments
             recommendations.append(recommendation)
         
         # 创建投资计划
@@ -339,7 +342,7 @@ class InvestmentCalculator:
             circuit_breaker_level=0,  # 新策略不使用熔断机制
             warning_messages=warning_messages,
             actual_investment_amount=total_investment_amount,  # 添加实际总投资金额
-            buffer_pool_usage=additional_funding,  # 记录资金池使用情况
+            buffer_pool_usage=total_buffer_usage,  # 记录资金池使用情况（包括试探性投资和额外投资）
             market_trend_analysis=market_trend_analysis
         )
         
