@@ -41,6 +41,10 @@ export default {
     getByCode (code) {
       return service.get(`/market-data/${code}`)
     },
+    // 获取特定资产的市场趋势分析
+    getTrendByCode (code) {
+      return service.get(`/market-trend/${code}`)
+    },
     // 刷新市场数据
     refresh () {
       return service.post('/market-data/refresh')
@@ -60,6 +64,18 @@ export default {
     // 生成新的投资计划
     generate () {
       return service.post('/investment-plans/generate')
+    },
+    // 获取投资系数计算详情
+    getDetails () {
+      return service.get('/investment-details')
+    },
+    // 删除投资计划
+    delete (planId) {
+      return service.delete(`/investment-plans/${planId}`)
+    },
+    // 生成历史日期的投资计划
+    generateHistorical (date) {
+      return service.post('/historical-test', { historical_date: date })
     }
   },
 

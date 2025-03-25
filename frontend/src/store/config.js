@@ -5,9 +5,8 @@ export const useConfigStore = defineStore('config', {
   state: () => ({
     config: {
       monthly_investment: 0,
-      risk_preference: '中等风险',
       assets: [],
-      buffer_percentage: 0.1
+      buffer_amount: 500.0
     },
     loading: false,
     saving: false,
@@ -21,8 +20,7 @@ export const useConfigStore = defineStore('config', {
     isValidConfig: (state) => {
       return (
         state.config.monthly_investment > 0 &&
-        state.config.assets.length > 0 &&
-        Math.abs(state.totalWeight - 1) < 0.001 // 总权重接近1
+        state.config.assets.length > 0
       )
     }
   },

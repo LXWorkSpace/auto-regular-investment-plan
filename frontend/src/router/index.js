@@ -7,6 +7,7 @@ const Market = () => import('../views/Market.vue')
 const Plans = () => import('../views/Plans.vue')
 const PlanDetail = () => import('../views/PlanDetail.vue')
 const ApiTest = () => import('../views/ApiTest.vue')
+const HistoricalTest = () => import('../views/HistoricalTest.vue')
 
 const routes = [
   {
@@ -44,6 +45,12 @@ const routes = [
     name: 'ApiTest',
     component: ApiTest,
     meta: { title: 'API接口测试' }
+  },
+  {
+    path: '/historical-test',
+    name: 'HistoricalTest',
+    component: HistoricalTest,
+    meta: { title: '历史数据测试' }
   }
 ]
 

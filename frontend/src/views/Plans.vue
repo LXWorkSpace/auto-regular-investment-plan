@@ -5,9 +5,9 @@
         <div class="card-header">
           <h2>投资计划列表</h2>
           <div>
-            <el-button 
-              type="primary" 
-              @click="generatePlan" 
+            <el-button
+              type="primary"
+              @click="generatePlan"
               :loading="plansStore.generating"
             >
               生成新计划
@@ -15,7 +15,7 @@
           </div>
         </div>
       </template>
-      
+
       <div v-loading="plansStore.loading">
         <el-alert
           v-if="plansStore.plans.length === 0"
@@ -25,7 +25,7 @@
           title="暂无投资计划"
           description="您还没有生成任何投资计划，请点击上方按钮生成第一个计划。"
         />
-        
+
         <el-timeline v-else>
           <el-timeline-item
             v-for="plan in plansStore.plans"
@@ -40,9 +40,13 @@
               <div class="plan-item-content">
                 <div class="plan-item-info">
                   <h3>
-                    {{ plan === plansStore.latestPlan ? '最新投资计划' : '历史投资计划' }}
-                    <el-tag 
-                      v-if="plan.circuit_breaker_triggered" 
+                    {{
+                      plan === plansStore.latestPlan
+                        ? "最新投资计划"
+                        : "历史投资计划"
+                    }}
+                    <el-tag
+                      v-if="plan.circuit_breaker_triggered"
                       type="danger"
                       effect="dark"
                       size="small"
@@ -53,43 +57,67 @@
                   <div class="plan-details">
                     <div class="detail-item">
                       <span class="label">月度总投资:</span>
-                      <span class="value">¥{{ plan.total_monthly_amount.toLocaleString() }}</span>
+                      <span class="value"
+                        >¥{{ plan.total_monthly_amount.toLocaleString() }}</span
+                      >
                     </div>
                     <div class="detail-item">
                       <span class="label">资产数量:</span>
-                      <span class="value">{{ plan.recommendations?.length || 0 }} 个</span>
+                      <span class="value"
+                        >{{ plan.recommendations?.length || 0 }} 个</span
+                      >
                     </div>
                     <div class="detail-item">
                       <span class="label">资金池金额:</span>
-                      <span class="value">¥{{ plan.buffer_amount.toLocaleString() }}</span>
+                      <span class="value"
+                        >¥{{ plan.buffer_amount.toLocaleString() }}</span
+                      >
                     </div>
                   </div>
-                  
+
                   <div class="assets-distribution" v-if="plan.recommendations">
                     <h4>资产分布:</h4>
                     <div class="asset-tags">
-                      <el-tag 
+                      <el-tag
                         v-for="rec in getTopRecommendations(plan)"
                         :key="rec.asset.code"
                         effect="plain"
                         class="asset-tag"
                       >
-                        {{ rec.asset.name }} {{ formatPercentage(rec.monthly_amount / plan.total_monthly_amount) }}
+                        {{ rec.asset.name }}
+                        {{
+                          formatPercentage(
+                            rec.monthly_amount / plan.total_monthly_amount
+                          )
+                        }}
                       </el-tag>
-                      <el-tag v-if="plan.recommendations.length > 5" type="info" class="asset-tag">
+                      <el-tag
+                        v-if="plan.recommendations.length > 5"
+                        type="info"
+                        class="asset-tag"
+                      >
                         其他 {{ plan.recommendations.length - 5 }} 项...
                       </el-tag>
                     </div>
                   </div>
                 </div>
-                
-                <div class="plan-item-actions">
-                  <el-button 
-                    type="primary" 
+
+                <div class="plan-actions">
+                  <el-button
+                    type="primary"
+                    size="small"
+                    plain
                     @click="viewPlanDetail(plan)"
-                    :icon="View"
                   >
                     查看详情
+                  </el-button>
+                  <el-button
+                    type="danger"
+                    size="small"
+                    plain
+                    @click="confirmDeletePlan(plan)"
+                  >
+                    删除
                   </el-button>
                 </div>
               </div>
@@ -98,7 +126,7 @@
         </el-timeline>
       </div>
     </el-card>
-    
+
     <el-dialog
       v-model="generateDialogVisible"
       title="生成新投资计划"
@@ -108,7 +136,7 @@
       <div class="generate-dialog-content">
         <p>生成新的投资计划将基于当前的市场数据和您的投资配置。</p>
         <p>确认要生成新的投资计划吗？</p>
-        
+
         <div class="warning-box" v-if="canGenerateWarning">
           <el-alert
             type="warning"
@@ -119,12 +147,12 @@
           />
         </div>
       </div>
-      
+
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="generateDialogVisible = false">取消</el-button>
-          <el-button 
-            type="primary" 
+          <el-button
+            type="primary"
             @click="confirmGeneratePlan"
             :loading="plansStore.generating"
           >
@@ -133,85 +161,125 @@
         </span>
       </template>
     </el-dialog>
+
+    <!-- 删除确认对话框 -->
+    <el-dialog v-model="deleteDialogVisible" title="确认删除" width="30%">
+      <span>确定要删除这个投资计划吗？此操作无法恢复。</span>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="deleteDialogVisible = false">取消</el-button>
+          <el-button type="danger" @click="deletePlan" :loading="deleting">
+            确认删除
+          </el-button>
+        </span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
-import { usePlansStore } from '../store/plans'
-import { ElMessage } from 'element-plus'
-import { View } from '@element-plus/icons-vue'
+import { ref, computed, onMounted } from "vue";
+import { useRouter } from "vue-router";
+import { usePlansStore } from "../store/plans";
+import { ElMessage } from "element-plus";
 
-const router = useRouter()
-const plansStore = usePlansStore()
-const generateDialogVisible = ref(false)
+const router = useRouter();
+const plansStore = usePlansStore();
+const generateDialogVisible = ref(false);
+const deleteDialogVisible = ref(false);
+const deleting = ref(false);
+const planToDelete = ref(null);
 
 // 计算属性
 const canGenerateWarning = computed(() => {
-  const latestPlan = plansStore.latestPlan
-  if (!latestPlan) return false
-  
+  const latestPlan = plansStore.latestPlan;
+  if (!latestPlan) return false;
+
   // 检查最近的计划是否是今天生成的
-  const today = new Date()
-  const generatedDate = new Date(latestPlan.generated_at)
-  
+  const today = new Date();
+  const generatedDate = new Date(latestPlan.generated_at);
+
   return (
     today.getDate() === generatedDate.getDate() &&
     today.getMonth() === generatedDate.getMonth() &&
     today.getFullYear() === generatedDate.getFullYear()
-  )
-})
+  );
+});
 
 // 方法
 const generatePlan = () => {
-  generateDialogVisible.value = true
-}
+  generateDialogVisible.value = true;
+};
 
 const confirmGeneratePlan = async () => {
   try {
-    await plansStore.generatePlan()
-    generateDialogVisible.value = false
-    
+    await plansStore.generatePlan();
+    generateDialogVisible.value = false;
+
     // 如果生成成功，跳转到详情页
     if (plansStore.currentPlan) {
-      ElMessage.success('投资计划生成成功')
-      router.push(`/plans/${plansStore.currentPlan.id}`)
+      ElMessage.success("投资计划生成成功");
+      router.push(`/plans/${plansStore.currentPlan.id}`);
     }
   } catch (error) {
-    ElMessage.error('生成计划失败，请稍后重试')
+    ElMessage.error("生成计划失败，请稍后重试");
   }
-}
+};
 
 const viewPlanDetail = (plan) => {
-  router.push(`/plans/${plan.id}`)
-}
+  router.push(`/plans/${plan.id}`);
+};
+
+const confirmDeletePlan = (plan) => {
+  planToDelete.value = plan;
+  deleteDialogVisible.value = true;
+};
+
+const deletePlan = async () => {
+  if (!planToDelete.value) return;
+
+  try {
+    deleting.value = true;
+    const result = await plansStore.deletePlan(planToDelete.value.id);
+    if (result) {
+      deleteDialogVisible.value = false;
+      ElMessage.success("投资计划删除成功");
+    } else {
+      ElMessage.error("删除计划失败，请稍后重试");
+    }
+  } catch (error) {
+    ElMessage.error("删除计划失败，请稍后重试");
+  } finally {
+    deleting.value = false;
+    planToDelete.value = null;
+  }
+};
 
 const getTimelineItemType = (plan) => {
   if (plan === plansStore.latestPlan) {
-    return 'primary'
+    return "primary";
   }
   if (plan.circuit_breaker_triggered) {
-    return 'danger'
+    return "danger";
   }
-  return ''
-}
+  return "";
+};
 
 const formatPercentage = (value) => {
-  return `${(value * 100).toFixed(0)}%`
-}
+  return `${(value * 100).toFixed(0)}%`;
+};
 
 const getTopRecommendations = (plan) => {
   // 按月度金额降序排序并返回前5个
   return [...plan.recommendations]
     .sort((a, b) => b.monthly_amount - a.monthly_amount)
-    .slice(0, 5)
-}
+    .slice(0, 5);
+};
 
 // 生命周期钩子
 onMounted(async () => {
-  await plansStore.loadPlans()
-})
+  await plansStore.loadPlans();
+});
 </script>
 
 <style scoped>
@@ -292,7 +360,7 @@ onMounted(async () => {
   margin-bottom: 5px;
 }
 
-.plan-item-actions {
+.plan-actions {
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -306,4 +374,4 @@ onMounted(async () => {
 .warning-box {
   margin-top: 20px;
 }
-</style> 
+</style>

@@ -95,6 +95,13 @@ export const testApi = async () => {
     console.log('最新计划可能不存在，这是预期的可能结果')
   }
 
+  // 测试获取投资系数计算详情API
+  try {
+    await testApiCall('获取投资系数计算详情', api.plans.getDetails)
+  } catch (e) {
+    console.log('获取投资系数计算详情失败', e)
+  }
+
   // 输出测试结果摘要
   console.log('\n%c测试结果摘要', 'color: #409EFF; font-weight: bold;')
   console.log(`总测试数: ${results.total}`)

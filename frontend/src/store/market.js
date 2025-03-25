@@ -6,7 +6,11 @@ export const useMarketStore = defineStore('market', {
     marketData: {},
     loading: false,
     refreshing: false,
-    lastUpdated: null
+    lastUpdated: null,
+    investmentDetails: null,
+    loadingDetails: false,
+    marketTrends: {},  // 存储资产的市场趋势分析结果
+    loadingTrends: false  // 加载趋势分析的状态
   }),
 
   getters: {
@@ -19,6 +23,23 @@ export const useMarketStore = defineStore('market', {
     formattedLastUpdated: (state) => {
       if (!state.lastUpdated) return '暂无数据'
       return new Date(state.lastUpdated).toLocaleString('zh-CN')
+    },
+    
+    // 获取特定资产的投资系数详情
+    getAssetInvestmentDetails: (state) => (assetCode) => {
+      if (!state.investmentDetails) return null
+      return {
+        marketDataStatus: state.investmentDetails.market_data_status?.[assetCode] || null,
+        coefficients: state.investmentDetails.coefficients?.[assetCode] || null,
+        frequency: state.investmentDetails.frequency?.[assetCode] || null,
+        specialConditions: state.investmentDetails.special_conditions?.[assetCode] || null,
+        marketScores: state.investmentDetails.market_scores?.[assetCode] || null
+      }
+    },
+    
+    // 获取特定资产的市场趋势分析
+    getAssetMarketTrend: (state) => (assetCode) => {
+      return state.marketTrends[assetCode] || null
     }
   },
 
@@ -70,6 +91,67 @@ export const useMarketStore = defineStore('market', {
     clearMarketData () {
       this.marketData = {}
       this.lastUpdated = null
+    },
+    
+    // 获取投资系数计算详情
+    async loadInvestmentDetails () {
+      this.loadingDetails = true
+      try {
+        const data = await api.plans.getDetails()
+        this.investmentDetails = data
+        return data
+      } catch (error) {
+        console.error('获取投资系数计算详情失败', error)
+        return null
+      } finally {
+        this.loadingDetails = false
+      }
+    },
+    
+    // 获取特定资产的市场趋势分析
+    async loadAssetMarketTrend (code) {
+      this.loadingTrends = true
+      try {
+        const data = await api.market.getTrendByCode(code)
+        // 更新趋势分析结果
+        this.marketTrends = {
+          ...this.marketTrends,
+          [code]: data
+        }
+        return data
+      } catch (error) {
+        console.error(`获取资产 ${code} 市场趋势分析失败`, error)
+        return null
+      } finally {
+        this.loadingTrends = false
+      }
+    },
+    
+    // 批量加载资产的市场趋势分析
+    async loadAllAssetMarketTrends (assetCodes) {
+      this.loadingTrends = true
+      try {
+        const promises = assetCodes.map(code => api.market.getTrendByCode(code))
+        const results = await Promise.all(promises)
+        
+        // 更新趋势分析结果
+        const trendsData = {}
+        assetCodes.forEach((code, index) => {
+          trendsData[code] = results[index]
+        })
+        
+        this.marketTrends = {
+          ...this.marketTrends,
+          ...trendsData
+        }
+        
+        return trendsData
+      } catch (error) {
+        console.error('批量加载市场趋势分析失败', error)
+        return {}
+      } finally {
+        this.loadingTrends = false
+      }
     }
   }
 }) 

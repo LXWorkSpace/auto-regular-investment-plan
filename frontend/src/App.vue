@@ -33,7 +33,13 @@
                 <el-icon><el-icon-document /></el-icon>
                 <span>投资计划</span>
               </el-menu-item>
-              <el-divider style="margin: 10px 0; border-color: rgba(255,255,255,0.1)" />
+              <el-menu-item index="/historical-test">
+                <el-icon><el-icon-time /></el-icon>
+                <span>历史数据测试</span>
+              </el-menu-item>
+              <el-divider
+                style="margin: 10px 0; border-color: rgba(255, 255, 255, 0.1)"
+              />
               <el-menu-item index="/api-test">
                 <el-icon><el-icon-connection /></el-icon>
                 <span>接口测试</span>
@@ -50,15 +56,16 @@
 </template>
 
 <script setup>
-import { ElConfigProvider } from 'element-plus'
-import zhCn from 'element-plus/es/locale/lang/zh-cn'
+import { ElConfigProvider } from "element-plus";
+import zhCn from "element-plus/es/locale/lang/zh-cn";
 import {
   Menu as ElIconMenu,
   Setting as ElIconSetting,
   DataLine as ElIconDataLine,
   Document as ElIconDocument,
-  Connection as ElIconConnection
-} from '@element-plus/icons-vue'
+  Connection as ElIconConnection,
+  Time as ElIconTime,
+} from "@element-plus/icons-vue";
 </script>
 
 <style scoped>
@@ -87,4 +94,4 @@ import {
   height: calc(100vh - 60px);
   border-right: none;
 }
-</style> 
+</style>

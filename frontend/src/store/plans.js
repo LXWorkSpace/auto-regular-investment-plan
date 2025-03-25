@@ -123,6 +123,29 @@ export const usePlansStore = defineStore('plans', {
     clearPlans () {
       this.plans = []
       this.currentPlan = null
+    },
+
+    // 删除投资计划
+    async deletePlan (planId) {
+      this.loading = true
+      try {
+        await api.plans.delete(planId)
+        
+        // 从本地状态中移除被删除的计划
+        this.plans = this.plans.filter(plan => plan.id !== planId)
+        
+        // 如果删除的是当前计划，则清空当前计划
+        if (this.currentPlan && this.currentPlan.id === planId) {
+          this.currentPlan = null
+        }
+        
+        return true
+      } catch (error) {
+        console.error('删除投资计划失败', error)
+        return false
+      } finally {
+        this.loading = false
+      }
     }
   }
 }) 

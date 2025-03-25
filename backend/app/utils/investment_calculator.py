@@ -3,8 +3,10 @@ from datetime import datetime, timedelta
 import math
 import logging
 import calendar
+import numpy as np
 
 from ..models.base_models import Asset, UserConfig, MarketData, InvestmentRecommendation, InvestmentPlan, InvestmentFrequency
+from .market_score import MarketScoreCalculator
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -15,155 +17,488 @@ class InvestmentCalculator:
     
     def __init__(self):
         """初始化投资计算器"""
-        pass
+        self.market_score_calculator = MarketScoreCalculator()
+        # 历史市场评分记录，用于追踪市场评分变化趋势
+        self.historical_scores = {}
+        # 资金池设置
+        self.default_buffer_pool = 1000.0  # 默认资金池大小
+        self.max_buffer_usage_percentage = 0.5  # 最多使用50%的资金池
     
-    def calculate_valuation_coefficient(self, pe_percentile: Optional[float] = None, pb_percentile: Optional[float] = None) -> float:
-        """计算估值系数
+    def analyze_market_trend(self, asset_code: str, days: int = 30) -> Dict:
+        """分析特定资产的市场趋势和回调情况
         
         Args:
-            pe_percentile: PE分位数（优先使用）
-            pb_percentile: PB分位数（PE不可用时使用）
+            asset_code: 资产代码
+            days: 分析天数
             
         Returns:
-            float: 估值系数
+            Dict: 市场趋势分析结果
         """
-        # 优先使用PE分位数
-        percentile = pe_percentile if pe_percentile is not None else pb_percentile
+        result = {
+            "asset_code": asset_code,
+            "trend": "stable",  # rising, falling, stable
+            "pullback_detected": False,
+            "pullback_from_high": 0.0,
+            "score_trend": "stable",  # rising, falling, stable
+            "recent_scores": [],
+            "investment_suggestion": ""
+        }
         
-        # 如果没有分位数据，返回1.0（中性）
-        if percentile is None:
-            return 1.0
+        # 检查历史评分数据
+        if asset_code not in self.historical_scores or len(self.historical_scores[asset_code]) < 2:
+            result["investment_suggestion"] = "数据不足，无法提供趋势分析"
+            return result
         
-        # 按照策略计算估值系数
-        if percentile < 0.3:
-            # 越低估加成越大
-            return 1 + (0.3 - percentile) / 0.3
-        elif percentile > 0.7:
-            # 越高估减仓越多
-            return 1 - (percentile - 0.7) / 0.3
+        # 获取最近的评分记录
+        recent_scores = self.historical_scores[asset_code][-min(days, len(self.historical_scores[asset_code])):]
+        result["recent_scores"] = recent_scores
+        
+        # 分析评分趋势
+        if len(recent_scores) >= 3:
+            last_scores = [s["score"] for s in recent_scores[-3:]]
+            if last_scores[2] > last_scores[1] > last_scores[0]:
+                result["score_trend"] = "rising"
+                result["trend"] = "improving"
+                result["investment_suggestion"] = "市场评分持续上升，表明市场状况正在改善"
+            elif last_scores[2] < last_scores[1] < last_scores[0]:
+                result["score_trend"] = "falling"
+                result["trend"] = "deteriorating"
+                result["investment_suggestion"] = "市场评分持续下降，可能表明市场状况正在恶化"
+        
+        # 检测评分拐点（可能是回调开始或结束）
+        if len(recent_scores) >= 5:
+            # 寻找最近一次明显的评分拐点
+            scores = [s["score"] for s in recent_scores]
+            for i in range(len(scores) - 3, 0, -1):
+                # 检测下降拐点（先升后降）
+                if scores[i] > scores[i-1] and scores[i] > scores[i+1]:
+                    result["pullback_detected"] = True
+                    result["pullback_days"] = len(scores) - i - 1
+                    result["pullback_score_change"] = scores[-1] - scores[i]
+                    if result["pullback_score_change"] > 10:
+                        result["investment_suggestion"] = "检测到市场从高点回调，评分显著提高，可能是加仓机会"
+                    break
+                
+                # 检测上升拐点（先降后升）
+                if i > 1 and scores[i] < scores[i-1] and scores[i] < scores[i+1]:
+                    result["trend"] = "recovering"
+                    result["recovery_days"] = len(scores) - i - 1
+                    result["recovery_score_change"] = scores[-1] - scores[i]
+                    if result["recovery_score_change"] > 5:
+                        result["investment_suggestion"] = "市场可能开始企稳回升，评分逐步提高"
+                    break
+        
+        # 基于最新评分提供投资建议
+        latest_score = recent_scores[-1]["score"] if recent_scores else 0
+        if latest_score >= 80:
+            result["market_status"] = "极度超跌"
+            if not result["investment_suggestion"]:
+                result["investment_suggestion"] = "市场处于极度超跌状态，建议积极加仓"
+        elif latest_score >= 65:
+            result["market_status"] = "价值区间"
+            if not result["investment_suggestion"]:
+                result["investment_suggestion"] = "市场处于价值区间，建议适度加仓"
+        elif latest_score >= 40:
+            result["market_status"] = "中性市场"
+            if not result["investment_suggestion"]:
+                result["investment_suggestion"] = "市场处于中性区间，建议常规定投"
+        elif latest_score >= 20:
+            result["market_status"] = "高估区间"
+            if not result["investment_suggestion"]:
+                result["investment_suggestion"] = "市场处于高估区间，建议减少投入"
         else:
-            # 中性区域
-            return 1.0
+            result["market_status"] = "极度泡沫"
+            if not result["investment_suggestion"]:
+                result["investment_suggestion"] = "市场处于极度泡沫状态，建议谨慎投资或暂停"
+        
+        return result
     
-    def calculate_trend_coefficient(self, deviation_percentage: Optional[float]) -> float:
-        """计算趋势系数
+    def generate_investment_plan(self, user_config: UserConfig, 
+                              market_data: Dict[str, MarketData]) -> InvestmentPlan:
+        """生成投资计划
         
         Args:
-            deviation_percentage: 价格与200日均线的偏离百分比
+            user_config: 用户配置
+            market_data: 市场数据字典
             
         Returns:
-            float: 趋势系数
+            InvestmentPlan: 投资计划
         """
-        # 如果没有偏离度数据，返回1.0（中性）
-        if deviation_percentage is None:
-            return 1.0
+        # 兼容旧版本数据
+        if hasattr(user_config, 'buffer_percentage') and not hasattr(user_config, 'buffer_amount'):
+            # 如果是旧数据格式，将百分比转为金额
+            buffer_percentage = getattr(user_config, 'buffer_percentage', 0.1)
+            user_config.buffer_amount = user_config.monthly_investment * buffer_percentage
+            
+        total_monthly_amount = user_config.monthly_investment
+        buffer_amount = user_config.buffer_amount  # 资金池作为额外资金，不从月度投资中扣除
         
-        # 按照策略计算趋势系数
-        if deviation_percentage < -0.15:
-            # 严重超跌区域
-            return 1.5
-        elif -0.15 <= deviation_percentage < -0.05:
-            # 弱势区域
-            return 1.2
-        elif -0.05 <= deviation_percentage <= 0.05:
-            # 平衡区域
-            return 1.0
+        # 将全部月度投资金额作为可用资金
+        available_amount = total_monthly_amount
+        
+        recommendations = []
+        warning_messages = []
+        
+        # 市场评分结果
+        market_scores = {}
+        highest_score = 0
+        market_trend_analysis = {}  # 存储市场趋势分析结果
+        
+        for asset in user_config.assets:
+            asset_data = market_data.get(asset.code)
+            # 计算市场评分
+            score_result = self.market_score_calculator.calculate_market_score(asset_data)
+            market_scores[asset.code] = score_result
+            
+            # 更新历史评分记录，用于追踪评分变化
+            if asset.code not in self.historical_scores:
+                self.historical_scores[asset.code] = []
+            self.historical_scores[asset.code].append({
+                "timestamp": datetime.now().isoformat(),
+                "score": score_result.get("total_score", 40)
+            })
+            
+            # 分析市场趋势（包括回调检测）
+            trend_analysis = self.analyze_market_trend(asset.code)
+            market_trend_analysis[asset.code] = trend_analysis
+            
+            # 如果检测到回调且评分上升，添加特别提示
+            if trend_analysis.get("pullback_detected") and trend_analysis.get("score_trend") == "rising":
+                warning_messages.append(f"{asset.code}: {trend_analysis.get('investment_suggestion')}")
+            
+            # 记录最高评分，用于资金池使用决策
+            current_score = score_result.get("total_score", 0)
+            if current_score > highest_score:
+                highest_score = current_score
+            
+            # 添加警告消息
+            if current_score >= 80:
+                warning_messages.append(f"{asset.code}: 市场极度超跌，建议积极加仓")
+            elif current_score >= 65:
+                warning_messages.append(f"{asset.code}: 市场处于价值区间，建议适度加仓")
+            elif current_score <= 25:
+                warning_messages.append(f"{asset.code}: 市场重度高估，建议减少投入")
+        
+        # 资产权重调整
+        adjusted_weights = self._adjust_asset_weights(user_config.assets, market_scores)
+        
+        # 确定是否使用资金池额外资金（仅在最高评分≥80分时）
+        additional_funding = 0
+        if highest_score >= 80:
+            # 在极度超跌区间，可以使用资金池
+            additional_funding = buffer_amount * self.max_buffer_usage_percentage
+            warning_messages.append(f"市场处于极度超跌状态，启用资金池额外投入 {additional_funding:.2f} 元")
+        
+        # 确定是否使用试探性投资（在评分接近价值区间时）
+        is_probing = False
+        probing_asset_codes = set()  # 跟踪哪些资产需要试探性投资
+        probing_percentage = 0.15  # 使用15%资金作为试探
+        
+        for asset in user_config.assets:
+            score = market_scores.get(asset.code, {}).get("total_score", 40)
+            if 60 <= score < 65:  # 接近价值区间
+                is_probing = True
+                probing_asset_codes.add(asset.code)
+                warning_messages.append(f"{asset.code}: 评分接近价值区间，启动小额试探机制")
+        
+        # 预分配资金：为试探性投资预留资金，其余资金正常分配
+        reserved_for_probing = 0
+        if is_probing:
+            # 预留的试探资金 = 总金额 * 试探比例 * 试探资产数量
+            reserved_for_probing = total_monthly_amount * probing_percentage * len(probing_asset_codes)
+            # 确保不会预留超过50%的资金用于试探
+            reserved_for_probing = min(reserved_for_probing, total_monthly_amount * 0.5)
+        
+        # 剩余可用于正常分配的资金
+        remaining_amount = total_monthly_amount - reserved_for_probing
+        
+        # 生成投资建议
+        total_investment_amount = 0  # 跟踪总投资金额
+        raw_recommendations = []
+        
+        # 第一轮：计算每个资产的基础月度投资金额
+        for asset in user_config.assets:
+            asset_code = asset.code
+            if asset_code not in adjusted_weights:
+                logger.warning(f"资产 {asset_code} 没有调整后的权重，跳过")
+                continue
+            
+            adjusted_weight = adjusted_weights[asset_code]
+            score_result = market_scores.get(asset_code, {"total_score": 40})
+            score = score_result.get("total_score", 40)
+            
+            # 确定投资策略
+            strategy = self.market_score_calculator.determine_investment_strategy(score)
+            
+            # 根据资产是否需要试探性投资来计算月度投资金额
+            if asset_code in probing_asset_codes:
+                # 试探性投资：固定使用预留的试探资金
+                monthly_amount = total_monthly_amount * probing_percentage
+                frequency = InvestmentFrequency.BIWEEKLY
+                frequency_factor = 0.6
+                
+                # 创建特殊策略标记
+                strategy["score_level"] = "接近价值区间(试探)"
+                strategy["description"] = "市场接近价值区间，启动试探性小额投资"
+            else:
+                # 非试探逻辑：按权重分配剩余资金
+                monthly_amount = remaining_amount * adjusted_weight
+                
+                # 处理特殊频率
+                raw_frequency = strategy.get("frequency", "biweekly")
+                frequency = self._convert_to_investment_frequency(raw_frequency)
+                
+                # 添加特殊频率标记，用于生成正确的投资日期
+                if raw_frequency == "daily":
+                    strategy["special_frequency"] = "daily"
+                
+                frequency_factor = strategy.get("amount_factor", 1.0)
+            
+            # 生成投资日期
+            investment_dates = self._get_investment_dates(frequency, 
+                                                      special_frequency=strategy.get("special_frequency"))
+            
+            # 计算单次投资金额 - 根据频率和频率因子调整
+            single_amount = self._calculate_single_amount(monthly_amount, frequency, frequency_factor)
+            
+            # 如果是极度超跌区间且有额外资金，增加投资金额
+            if score >= 80 and additional_funding > 0:
+                # 按权重分配额外资金
+                extra_amount = additional_funding * adjusted_weight
+                single_amount += extra_amount / 4  # 假设极度超跌区间分4批投入
+            
+            # 记录原始建议
+            raw_rec = {
+                "asset": asset,
+                "score": score,
+                "monthly_amount": monthly_amount,  # 原始月度分配金额
+                "single_amount": single_amount,    # 单次投资金额
+                "frequency": frequency,            # 投资频率
+                "frequency_factor": frequency_factor,  # 频率系数
+                "special_frequency": strategy.get("special_frequency"),
+                "investment_dates": investment_dates,  # 投资日期
+                "special_condition": strategy.get("score_level")  # 特殊市场条件
+            }
+            raw_recommendations.append(raw_rec)
+        
+        # 计算实际每月总投资额
+        raw_monthly_total = sum(rec["monthly_amount"] for rec in raw_recommendations)
+        
+        # 计算预期总投资额（包含频率因子影响）
+        expected_total_with_frequency = sum(
+            rec["single_amount"] * len(rec["investment_dates"])
+            for rec in raw_recommendations
+        )
+        
+        # 确保实际总投资额等于月度预算
+        adjustment_factor = 1.0
+        
+        # 如果不完全相等，进行调整
+        if abs(expected_total_with_frequency - (total_monthly_amount + additional_funding)) > 0.01:
+            adjustment_factor = (total_monthly_amount + additional_funding) / expected_total_with_frequency
+            logger.info(f"调整投资计划以匹配预算: 系数={adjustment_factor:.4f}, 原始总额={expected_total_with_frequency:.2f}, 目标={total_monthly_amount + additional_funding:.2f}")
+        
+        # 第二轮：创建最终推荐并应用预算调整
+        for raw_rec in raw_recommendations:
+            asset = raw_rec["asset"]
+            score = raw_rec["score"]
+            score_result = market_scores.get(asset.code, {})
+            
+            # 应用预算调整因子到单次投资金额
+            adjusted_single_amount = raw_rec["single_amount"] * adjustment_factor
+            
+            # 重新计算调整后的月度投资金额，确保与频率和单次金额一致
+            frequency = raw_rec["frequency"]
+            num_investments = len(raw_rec["investment_dates"])  # 一个月内的投资次数
+            adjusted_monthly_amount = adjusted_single_amount * num_investments
+            
+            # 创建投资建议
+            recommendation = InvestmentRecommendation(
+                asset=asset,
+                valuation_coefficient=score_result.get("valuation_score", 10) / 10,  # 转换为系数格式
+                trend_coefficient=score_result.get("trend_score", 10) / 10,
+                volatility_coefficient=score_result.get("volatility_score", 10) / 10,
+                recommended_frequency=frequency,
+                frequency_factor=raw_rec["frequency_factor"],
+                monthly_amount=adjusted_monthly_amount,  # 调整后的月度金额
+                single_amount=adjusted_single_amount,    # 调整后的单次金额
+                investment_dates=raw_rec["investment_dates"],
+                special_condition=raw_rec["special_condition"]
+            )
+            
+            # 更新总投资金额
+            total_investment_amount += adjusted_single_amount * num_investments
+            recommendations.append(recommendation)
+        
+        # 创建投资计划
+        investment_plan = InvestmentPlan(
+            total_monthly_amount=total_monthly_amount,
+            effective_monthly_amount=available_amount,  # 等于total_monthly_amount
+            buffer_amount=buffer_amount,  # 保留资金池金额字段，但它是额外资金
+            recommendations=recommendations,
+            circuit_breaker_level=0,  # 新策略不使用熔断机制
+            warning_messages=warning_messages,
+            actual_investment_amount=total_investment_amount,  # 添加实际总投资金额
+            buffer_pool_usage=additional_funding,  # 记录资金池使用情况
+            market_trend_analysis=market_trend_analysis
+        )
+        
+        return investment_plan
+    
+    def _adjust_asset_weights(self, assets: List[Asset], market_scores: Dict[str, Dict]) -> Dict[str, float]:
+        """根据市场评分调整资产权重
+        
+        Args:
+            assets: 资产列表
+            market_scores: 市场评分结果
+            
+        Returns:
+            Dict[str, float]: 调整后的资产权重，键为资产代码
+        """
+        # 初始化调整后的权重
+        adjusted_weights = {}
+        
+        # 如果资产列表为空，返回空字典
+        if not assets:
+            logger.warning("资产列表为空，无法调整权重")
+            return {}
+        
+        # 确保所有资产权重初始有效
+        valid_assets = []
+        for asset in assets:
+            try:
+                # 确保权重是有效数字且大于0
+                if asset.weight is None or not isinstance(asset.weight, (int, float)) or asset.weight <= 0:
+                    logger.warning(f"资产 {asset.code} 的权重无效: {asset.weight}, 设置为默认权重")
+                    asset.weight = 1.0
+                valid_assets.append(asset)
+            except Exception as e:
+                logger.error(f"处理资产 {asset.code if hasattr(asset, 'code') else 'unknown'} 权重时出错: {str(e)}")
+                continue
+        
+        # 如果没有有效资产，返回空字典
+        if not valid_assets:
+            logger.warning("没有有效资产，无法调整权重")
+            return {}
+        
+        # 定义权重调整上限
+        max_adjustment = 0.1  # 最大上下浮动10%
+        
+        # 计算权重调整
+        for asset in valid_assets:
+            try:
+                score_data = market_scores.get(asset.code, {})
+                score = score_data.get("total_score", 40)
+                
+                # 确保score是有效数字
+                if not isinstance(score, (int, float)):
+                    logger.warning(f"资产 {asset.code} 的评分无效: {score}, 使用默认评分")
+                    score = 40
+                
+                base_weight = asset.weight
+                
+                # 根据分数调整权重
+                if score >= 80:  # 极度超跌
+                    adjustment = max_adjustment
+                elif score >= 65:  # 重度价值区间
+                    adjustment = max_adjustment * 0.7
+                elif score >= 55:  # 轻度价值区间
+                    adjustment = max_adjustment * 0.3
+                elif score <= 25:  # 重度高估
+                    adjustment = -max_adjustment
+                elif score <= 35:  # 轻度高估
+                    adjustment = -max_adjustment * 0.5
+                else:  # 中性区间
+                    adjustment = 0
+                
+                adjusted_weights[asset.code] = base_weight * (1 + adjustment)
+                logger.debug(f"资产 {asset.code} 权重调整: {base_weight} -> {adjusted_weights[asset.code]}, 评分: {score}")
+            except Exception as e:
+                logger.error(f"调整资产 {asset.code} 权重时出错: {str(e)}")
+                # 如果出错，使用原始权重
+                adjusted_weights[asset.code] = asset.weight
+        
+        # 归一化权重确保总和为1
+        total_weight = sum(adjusted_weights.values())
+        if total_weight > 0:
+            for code in adjusted_weights:
+                adjusted_weights[code] /= total_weight
         else:
-            # 超涨区域
-            return 0.8
+            # 如果总权重为0，平均分配权重
+            equal_weight = 1.0 / len(adjusted_weights) if adjusted_weights else 0
+            for code in adjusted_weights:
+                adjusted_weights[code] = equal_weight
+            logger.warning("总权重为0，已平均分配权重")
+        
+        return adjusted_weights
     
-    def calculate_volatility_coefficient(self, atr_20: Optional[float], atr_baseline: Optional[float]) -> float:
-        """计算波动系数
+    def _convert_to_investment_frequency(self, frequency_str: str) -> InvestmentFrequency:
+        """将字符串转换为InvestmentFrequency枚举
         
         Args:
-            atr_20: 20日ATR
-            atr_baseline: 基准ATR（过去一年ATR中位数）
+            frequency_str: 频率字符串
             
         Returns:
-            float: 波动系数
+            InvestmentFrequency: 投资频率枚举
         """
-        # 如果没有ATR数据，返回1.0（中性）
-        if atr_20 is None or atr_baseline is None or atr_20 == 0:
-            return 1.0
-        
-        # 计算波动系数 = 基准波动率 / 当前ATR
-        volatility_coefficient = atr_baseline / atr_20
-        
-        # 限制系数范围，避免极端值
-        return max(0.5, min(volatility_coefficient, 1.5))
-    
-    def determine_frequency(self, volatility_coefficient: float) -> Tuple[InvestmentFrequency, float]:
-        """根据波动系数确定投资频率
-        
-        Args:
-            volatility_coefficient: 波动系数
-            
-        Returns:
-            Tuple[InvestmentFrequency, float]: (投资频率, 频率因子)
-        """
-        # 按照波动系数分层决策
-        if volatility_coefficient > 1.3:
-            # 极度平静
-            return InvestmentFrequency.DAILY, 0.2
-        elif 0.9 <= volatility_coefficient <= 1.3:
-            # 正常波动
-            return InvestmentFrequency.WEEKLY, 0.4
-        elif 0.6 <= volatility_coefficient < 0.9:
-            # 波动加剧
-            return InvestmentFrequency.BIWEEKLY, 0.7
+        if frequency_str == "daily":
+            return InvestmentFrequency.DAILY
+        elif frequency_str == "weekly":
+            return InvestmentFrequency.WEEKLY
+        elif frequency_str == "biweekly":
+            return InvestmentFrequency.BIWEEKLY
         else:
-            # 极端动荡
-            return InvestmentFrequency.MONTHLY, 1.0
+            return InvestmentFrequency.MONTHLY
     
-    def calculate_monthly_amount(self, total_amount: float, weight: float, 
-                               valuation_coefficient: float, trend_coefficient: float) -> float:
-        """计算月度投资金额
-        
-        Args:
-            total_amount: 总投资金额
-            weight: 资产权重
-            valuation_coefficient: 估值系数
-            trend_coefficient: 趋势系数
-            
-        Returns:
-            float: 月度投资金额
-        """
-        # 理论月投资额 = 总金额 × 权重 × 估值系数 × 趋势系数
-        monthly_amount = total_amount * weight * valuation_coefficient * trend_coefficient
-        return monthly_amount
-    
-    def calculate_single_amount(self, monthly_amount: float, volatility_coefficient: float, 
-                              frequency_factor: float, frequency: InvestmentFrequency) -> float:
-        """计算单次投资金额
+    def _calculate_single_amount(self, monthly_amount: float, frequency: InvestmentFrequency, 
+                              frequency_factor: float) -> float:
+        """计算单次投资金额，考虑频率因子，但保持总投资金额固定
         
         Args:
             monthly_amount: 月度投资金额
-            volatility_coefficient: 波动系数
-            frequency_factor: 频率因子
             frequency: 投资频率
+            frequency_factor: 频率因子影响单次投资金额，但不减少总投资
             
         Returns:
             float: 单次投资金额
         """
-        # 对于月投资，需要应用补偿乘数
-        if frequency == InvestmentFrequency.MONTHLY and volatility_coefficient < 1.0:
-            # 低频补偿算法
-            baseline_atr_ratio = max(0, 1 + (1.0 - volatility_coefficient))
-            compensation_multiplier = min(1.2, baseline_atr_ratio)
-            
-            # 单次投资额 = 理论月投资额 × 波动系数 × 频率因子 × 补偿乘数
-            single_amount = monthly_amount * volatility_coefficient * frequency_factor * compensation_multiplier
-        else:
-            # 单次投资额 = 理论月投资额 × 波动系数 × 频率因子
-            single_amount = monthly_amount * volatility_coefficient * frequency_factor
+        # 计算频率对应的投资次数
+        if frequency == InvestmentFrequency.DAILY:
+            # 假设月均20个交易日，每日投资
+            num_investments = 20
+        elif frequency == InvestmentFrequency.WEEKLY:
+            # 假设月均4周，每周投资
+            num_investments = 4
+        elif frequency == InvestmentFrequency.BIWEEKLY:
+            # 每两周一次，每月投资2次
+            num_investments = 2
+        else:  # MONTHLY
+            # 月度投资1次
+            num_investments = 1
         
-        return single_amount
+        # 计算基本单次投资金额（未考虑频率因子）
+        base_single_amount = monthly_amount / num_investments
+        
+        # 如果有频率因子不为1.0，调整单次金额，但调整投资次数以保持总额
+        if frequency_factor != 1.0:
+            # 单次金额变为原来的frequency_factor倍
+            adjusted_single_amount = base_single_amount * frequency_factor
+            # 实际投资次数调整为保持总投资金额不变
+            actual_num_investments = monthly_amount / adjusted_single_amount
+            
+            # 实际投资次数取整可能导致总额略有不同，下一步会有adjustment_factor处理
+            logger.debug(f"频率因子调整: {frequency} 单次金额: {base_single_amount:.2f} -> {adjusted_single_amount:.2f}, 投资次数: {num_investments} -> {actual_num_investments:.2f}")
+            
+            return adjusted_single_amount
+        else:
+            return base_single_amount
     
-    def get_investment_dates(self, frequency: InvestmentFrequency) -> List[str]:
+    def _get_investment_dates(self, frequency: InvestmentFrequency, special_frequency: str = None) -> List[str]:
         """获取投资日期建议
         
         Args:
             frequency: 投资频率
+            special_frequency: 特殊频率标记（用于处理特殊情况）
             
         Returns:
             List[str]: 投资日期列表
@@ -176,183 +511,115 @@ class InvestmentCalculator:
         
         dates = []
         
+        # 根据频率生成投资日期
         if frequency == InvestmentFrequency.DAILY:
-            # 日投：建议最近5个交易日
-            for i in range(5):
-                date = now + timedelta(days=i+1)
-                # 跳过周末
-                while date.weekday() >= 5:  # 5和6是周六和周日
-                    date += timedelta(days=1)
-                dates.append(date.strftime("%Y-%m-%d"))
+            # 生成接下来10个工作日，每个工作日都投资
+            current_date = now
+            count = 0
+            days_added = 0
+            
+            # 极度超跌情况下，生成10个工作日的日期
+            while count < 10:
+                days_added += 1
+                current_date = now + timedelta(days=days_added)
+                
+                # 简单处理，跳过周末
+                if current_date.weekday() < 5:  # 0-4表示周一至周五
+                    dates.append(current_date.strftime('%Y-%m-%d'))
+                    count += 1
         
         elif frequency == InvestmentFrequency.WEEKLY:
-            # 周投：建议每周四
-            for i in range(4):  # 四周
-                # 找到下一个周四
-                days_ahead = 3 - now.weekday()  # 周四是3
-                if days_ahead <= 0:  # 如果今天是周四或之后，则计算下周四
-                    days_ahead += 7
-                date = now + timedelta(days=days_ahead + i*7)
-                dates.append(date.strftime("%Y-%m-%d"))
+            # 生成未来4周的相同星期几
+            current_weekday = now.weekday()
+            for i in range(1, 5):
+                days_ahead = i * 7
+                future_date = now + timedelta(days=days_ahead)
+                dates.append(future_date.strftime('%Y-%m-%d'))
         
         elif frequency == InvestmentFrequency.BIWEEKLY:
-            # 双周投：每月第2、4个星期四
-            # 获取下个月的日历
-            cal = calendar.monthcalendar(next_year, next_month)
+            # 生成未来2次两周投资日期
+            for i in range(1, 3):
+                days_ahead = i * 14
+                future_date = now + timedelta(days=days_ahead)
+                dates.append(future_date.strftime('%Y-%m-%d'))
+                
+        else:  # MONTHLY
+            # 本月投资日期（如果今天已经超过了本月15日）和下月投资日期
+            if now.day < 15:
+                # 本月15日
+                this_month_date = datetime(current_year, current_month, 15)
+                dates.append(this_month_date.strftime('%Y-%m-%d'))
             
-            # 找到第2和第4个周四（周四索引为3）
-            thursdays = [week[3] for week in cal if week[3] != 0]
-            if len(thursdays) >= 2:
-                dates.append(f"{next_year}-{next_month:02d}-{thursdays[1]:02d}")
-            if len(thursdays) >= 4:
-                dates.append(f"{next_year}-{next_month:02d}-{thursdays[3]:02d}")
-        
-        elif frequency == InvestmentFrequency.MONTHLY:
-            # 月投：下月首个非农数据公布后第3个交易日
-            # 非农通常在每月第一个星期五公布
-            cal = calendar.monthcalendar(next_year, next_month)
-            first_friday = next(week[4] for week in cal if week[4] != 0)
-            
-            # 非农数据后第3个交易日（跳过周末）
-            nonfarm_date = datetime(next_year, next_month, first_friday)
-            trading_day_count = 0
-            days_after = 0
-            
-            while trading_day_count < 3:
-                days_after += 1
-                date = nonfarm_date + timedelta(days=days_after)
-                if date.weekday() < 5:  # 工作日
-                    trading_day_count += 1
-            
-            dates.append(date.strftime("%Y-%m-%d"))
+            # 下月15日
+            next_month_date = datetime(next_year, next_month, 15)
+            dates.append(next_month_date.strftime('%Y-%m-%d'))
         
         return dates
     
-    def check_circuit_breaker(self, market_data: Dict[str, MarketData]) -> bool:
-        """检查熔断机制是否触发
+    def get_investment_details(self, market_data: Dict[str, MarketData]) -> Dict:
+        """获取投资详情，包括评分和投资建议
         
         Args:
             market_data: 市场数据字典
             
         Returns:
-            bool: 是否触发熔断
+            Dict: 投资详情
         """
+        result = {
+            "market_scores": {},
+            "investment_strategies": {}
+        }
+        
         for code, data in market_data.items():
-            # 检查是否满足熔断条件：PE分位>90%且偏离度>20%
-            if (data.pe_percentile is not None and data.pe_percentile > 0.9 and
-                data.deviation_percentage is not None and data.deviation_percentage > 0.2):
-                return True
+            # 计算市场评分
+            score_result = self.market_score_calculator.calculate_market_score(data)
+            result["market_scores"][code] = score_result
+            
+            # 确定投资策略
+            strategy = self.market_score_calculator.determine_investment_strategy(score_result.get("total_score", 40))
+            result["investment_strategies"][code] = strategy
         
-        return False
+        return result
     
-    def check_rebalance_required(self, assets: List[Asset], market_data: Dict[str, MarketData]) -> bool:
-        """检查是否需要再平衡
+    def _detect_market_pullback(self, market_data: MarketData, 
+                             historical_scores: List[Dict], window: int = 20) -> Dict:
+        """检测市场回调情况
         
         Args:
-            assets: 资产列表
-            market_data: 市场数据字典
+            market_data: 市场数据
+            historical_scores: 历史评分记录
+            window: 检测窗口大小
             
         Returns:
-            bool: 是否需要再平衡
+            Dict: 回调分析结果
         """
-        # 简化实现：假设已经基于市场数据计算出当前持仓比例
-        # 实际应用中，需要获取用户实际持仓数据
+        result = {
+            "is_pullback": False,
+            "pullback_depth": 0,
+            "recent_high": None,
+            "days_from_high": 0,
+            "score_trend": "stable"  # stable, rising, falling
+        }
         
-        # 这里仅返回False，表示不需要再平衡
-        # 实际应用中，需要检查|实际权重 - 目标权重| > 15%
-        return False
-    
-    def generate_investment_plan(self, user_config: UserConfig, 
-                               market_data: Dict[str, MarketData]) -> InvestmentPlan:
-        """生成投资计划
+        # 检查历史数据是否足够
+        if len(historical_scores) < 2:
+            return result
         
-        Args:
-            user_config: 用户配置
-            market_data: 市场数据字典
-            
-        Returns:
-            InvestmentPlan: 投资计划
-        """
-        total_monthly_amount = user_config.monthly_investment
-        buffer_amount = total_monthly_amount * user_config.buffer_percentage
-        available_amount = total_monthly_amount - buffer_amount
+        # 分析评分趋势
+        recent_scores = [s["score"] for s in historical_scores[-min(window, len(historical_scores)):]]
+        if len(recent_scores) >= 3:
+            if recent_scores[-1] > recent_scores[-2] > recent_scores[-3]:
+                result["score_trend"] = "rising"
+            elif recent_scores[-1] < recent_scores[-2] < recent_scores[-3]:
+                result["score_trend"] = "falling"
         
-        recommendations = []
+        # 检测近期高点
+        if market_data and market_data.w52_high and market_data.price:
+            # 计算从52周高点的回撤
+            pullback = (market_data.price - market_data.w52_high) / market_data.w52_high
+            if pullback < -0.05:  # 至少5%的回撤
+                result["is_pullback"] = True
+                result["pullback_depth"] = pullback
+                result["recent_high"] = market_data.w52_high
         
-        # 检查熔断和再平衡
-        circuit_breaker_triggered = self.check_circuit_breaker(market_data)
-        rebalance_required = self.check_rebalance_required(user_config.assets, market_data)
-        
-        for asset in user_config.assets:
-            # 获取市场数据
-            asset_market_data = market_data.get(asset.code)
-            
-            if asset_market_data is None:
-                # 如果没有市场数据，使用默认值
-                valuation_coefficient = 1.0
-                trend_coefficient = 1.0
-                volatility_coefficient = 1.0
-                frequency = InvestmentFrequency.MONTHLY
-                frequency_factor = 1.0
-            else:
-                # 计算三大系数
-                valuation_coefficient = self.calculate_valuation_coefficient(
-                    asset_market_data.pe_percentile, 
-                    asset_market_data.pb_percentile
-                )
-                
-                trend_coefficient = self.calculate_trend_coefficient(
-                    asset_market_data.deviation_percentage
-                )
-                
-                volatility_coefficient = self.calculate_volatility_coefficient(
-                    asset_market_data.atr_20,
-                    asset_market_data.atr_baseline
-                )
-                
-                # 确定投资频率
-                frequency, frequency_factor = self.determine_frequency(volatility_coefficient)
-            
-            # 计算月度和单次投资金额
-            monthly_amount = self.calculate_monthly_amount(
-                available_amount, 
-                asset.weight, 
-                valuation_coefficient, 
-                trend_coefficient
-            )
-            
-            single_amount = self.calculate_single_amount(
-                monthly_amount,
-                volatility_coefficient,
-                frequency_factor,
-                frequency
-            )
-            
-            # 获取投资日期建议
-            investment_dates = self.get_investment_dates(frequency)
-            
-            # 创建投资建议
-            recommendation = InvestmentRecommendation(
-                asset=asset,
-                valuation_coefficient=valuation_coefficient,
-                trend_coefficient=trend_coefficient,
-                volatility_coefficient=volatility_coefficient,
-                recommended_frequency=frequency,
-                frequency_factor=frequency_factor,
-                monthly_amount=monthly_amount,
-                single_amount=single_amount,
-                investment_dates=investment_dates
-            )
-            
-            recommendations.append(recommendation)
-        
-        # 创建投资计划
-        investment_plan = InvestmentPlan(
-            total_monthly_amount=total_monthly_amount,
-            buffer_amount=buffer_amount,
-            recommendations=recommendations,
-            circuit_breaker_triggered=circuit_breaker_triggered,
-            rebalance_required=rebalance_required
-        )
-        
-        return investment_plan 
+        return result 
